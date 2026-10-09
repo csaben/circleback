@@ -1,0 +1,11 @@
+{
+  "name": "circleback",
+  "owner": { "name": "csaben" },
+  "plugins": [
+    {
+      "name": "circleback",
+      "source": "./",
+      "description": "Circle part of your running site, type what you mean, and Claude fixes it with hot reload."
+    }
+  ]
+}

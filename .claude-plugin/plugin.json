@@ -1,0 +1,10 @@
+{
+  "name": "circleback",
+  "version": "0.1.0",
+  "description": "Circle part of your running site, type what you mean, and Claude fixes it with hot reload.",
+  "license": "MIT",
+  "author": {
+    "name": "csaben"
+  },
+  "repository": "https://github.com/csaben/circleback"
+}

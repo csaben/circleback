@@ -1,0 +1,11 @@
+{
+  "name": "circleback",
+  "version": "0.1.0",
+  "description": "Circle part of your running site, type what you mean, and your coding agent fixes it. A zero-dependency proxy that works with any dev server.",
+  "type": "module",
+  "bin": { "circleback": "bin/circleback.mjs" },
+  "files": ["bin", "overlay.js", "skills", ".claude-plugin", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "license": "MIT",
+  "keywords": ["dev-tools", "feedback", "hot-reload", "claude-code", "agent", "overlay"]
+}
