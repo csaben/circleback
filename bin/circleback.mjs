@@ -6,6 +6,7 @@
 //   circleback [--target http://localhost:3000] [--port 3999] [--host 127.0.0.1] [--dir .circleback]
 //   circleback reply <note-id> <message...> [--dir .circleback]
 //   circleback watch [--dir .circleback]     # prints each new note as one JSON line
+// Each note can carry a snapshot: a script-free copy of the page as it was, in .circleback/snapshots/.
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
@@ -25,6 +26,8 @@ const flag = (name, fallback) => {
 const dir = resolve(flag('dir', process.env.CIRCLEBACK_DIR || '.circleback'));
 const inbox = join(dir, 'inbox.jsonl');
 const repliesFile = join(dir, 'replies.jsonl');
+const snapshotDir = join(dir, 'snapshots');
+const SNAPSHOT_ID = /^[a-z0-9]{6,16}$/;
 
 function ensureDir() {
   mkdirSync(dir, { recursive: true });
@@ -78,7 +81,7 @@ function serve() {
   const host = flag('host', process.env.CIRCLEBACK_HOST || '127.0.0.1');
   const secure = target.protocol === 'https:';
   const targetPort = Number(target.port || (secure ? 443 : 80));
-  const overlay = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay.js'));
+  const overlayFile = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay.js');
   const tag = '<script src="/__circleback/overlay.js" defer></script>';
   ensureDir();
 
@@ -132,7 +135,7 @@ function serve() {
     const url = new URL(req.url, 'http://x');
     if (url.pathname === '/__circleback/overlay.js') {
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
-      return res.end(overlay);
+      return res.end(readFileSync(overlayFile)); // read per request, so overlay edits apply on reload
     }
     if (url.pathname === '/__circleback/note' && req.method === 'POST') {
       let body = '';
@@ -142,6 +145,9 @@ function serve() {
         try { note = JSON.parse(body); } catch { res.writeHead(400); return res.end('bad json'); }
         const id = Date.now().toString(36);
         const entry = { id, at: new Date().toISOString(), ...note };
+        // Point the agent at the frozen copy of the page this note was drawn on.
+        if (typeof note.snapshot === 'string' && SNAPSHOT_ID.test(note.snapshot)) entry.snapshotFile = join(snapshotDir, `${note.snapshot}.html`);
+        else delete entry.snapshot;
         ensureDir();
         appendFileSync(inbox, JSON.stringify(entry) + '\n');
         console.log(`note ${id}: ${String(note.note).slice(0, 100)}`);
@@ -149,6 +155,27 @@ function serve() {
         res.end(JSON.stringify({ id }));
       });
       return;
+    }
+    if (url.pathname === '/__circleback/snapshot' && req.method === 'POST') {
+      const chunks = [];
+      let size = 0;
+      req.on('data', c => { size += c.length; if (size > 30_000_000) req.destroy(); else chunks.push(c); });
+      req.on('end', () => {
+        const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        mkdirSync(snapshotDir, { recursive: true });
+        writeFileSync(join(snapshotDir, `${id}.html`), Buffer.concat(chunks));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ id }));
+      });
+      return;
+    }
+    const snapshot = url.pathname.match(/^\/__circleback\/snapshot\/([a-z0-9]+)$/);
+    if (snapshot && SNAPSHOT_ID.test(snapshot[1])) {
+      const file = join(snapshotDir, `${snapshot[1]}.html`);
+      if (!existsSync(file)) { res.writeHead(404); return res.end(); }
+      // Snapshots are inert copies: no scripts may run in them.
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "script-src 'none'" });
+      return res.end(readFileSync(file));
     }
     if (url.pathname === '/__circleback/replies') {
       const ids = new Set((url.searchParams.get('ids') || '').split(',').filter(Boolean));

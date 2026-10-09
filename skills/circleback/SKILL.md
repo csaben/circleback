@@ -19,7 +19,7 @@ npx -y github:csaben/circleback --target http://localhost:3000 --port 3999
 - Notes go to `.circleback/inbox.jsonl` in the current directory. That folder ignores itself in git.
 - To reach it from another device (phone, tailnet), add `--host 0.0.0.0` or put it behind `tailscale serve`. Only do that if the user asks.
 
-Tell the user: open `http://localhost:3999`, press **`** (backtick) or the pink ✎ button, circle the thing, type the change, press Enter.
+Tell the user: open `http://localhost:3999`, press **`** (backtick) or the pink ✎ button, circle the thing, type the change, press Enter. **Shift+`** freezes the page first (keeps open menus and hover states while they circle). After a fix, **\** (or the ⇆ button, or "Compare" on your reply) shows the page before their note against the live page, with a draggable divider.
 
 ## 2. Watch for notes
 
@@ -43,6 +43,7 @@ A note looks like:
 ```
 
 - `note` is what they want, in their words. `pointed` is the element at the centre of the circle; `elements` are the outermost elements mostly inside it. `url`, `viewport`, `scroll` and `theme` say exactly what they were looking at.
+- `snapshotFile` is a script-free HTML copy of the page exactly as they saw it, with styles inlined. Elements that were hovered or focused carry `data-cb-hover`, `data-cb-focus` etc., and `state` on an element lists them. `frozen: true` means they froze the page first, usually to point at something that only shows on hover or while a menu is open. Read the snapshot (grep it) when the note is about such a state, or when the live page may already differ.
 - Find the code with the class names, ids and text: grep for them. Prefer the component and stylesheet that own that element.
 - Make the smallest change that does what they asked. Match the project's existing style. Scope page-specific changes so they don't leak into other pages.
 - If the note is vague ("looks off", "make it nicer"), make a confident, tasteful attempt rather than asking. They can circle it again.

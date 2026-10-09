@@ -40,6 +40,19 @@ All commands take `--dir` (default `.circleback`). That folder holds `inbox.json
 
 The note text, the page URL and title, viewport, scroll position, theme, the circled box (viewport and page coordinates), the element at the centre of the circle, and up to eight outermost elements inside it, each with tag, id, classes, a short CSS path, text and a few useful attributes.
 
+Every note also saves a **snapshot**: a script-free copy of the page as it looked when you started drawing, with styles copied in and hover/focus states pinned. The note's `snapshotFile` points at it in `.circleback/snapshots/`.
+
+## Keys
+
+| Key | What it does |
+|---|---|
+| <kbd>`</kbd> | Circle something and leave a note |
+| <kbd>Shift</kbd>+<kbd>`</kbd> | Freeze the page first, then circle on the frozen copy. Open menus and hover states stay put. |
+| <kbd>\</kbd> | Compare: the page before your last note on this page against the live page. Split with a draggable divider, or Before / Now. Scrolling stays in sync. |
+| <kbd>Esc</kbd> | Cancel or close |
+
+Agent replies also show a **Compare** button.
+
 ## Notes
 
 - The overlay is only in pages served through the proxy, never in your build.
