@@ -18,7 +18,10 @@
     .frozen{outline:3px solid #3b82f6;outline-offset:-3px}
     svg{position:fixed;inset:0;width:100%;height:100%;pointer-events:auto;cursor:crosshair;background:rgba(0,0,0,.08);touch-action:none}
     .hint,.toast{position:fixed;padding:7px 12px;border-radius:7px;background:#111;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.3)}
-    .hint{top:12px;left:50%;transform:translateX(-50%)}
+    .hint{top:12px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 24px);pointer-events:auto}
+    .hint .link{color:#fff;white-space:nowrap}
+    .send{padding:4px 12px;border:0;border-radius:5px;background:#ff3b6b;color:#fff;font-weight:600;cursor:pointer;font-size:12px}
+    .acts{display:flex;align-items:center;gap:12px}
     .hint b{color:#93c5fd;font-weight:600}
     .toasts{position:fixed;left:16px;bottom:122px;display:grid;gap:6px;max-width:min(420px,calc(100vw - 32px))}
     .toast{position:static;display:flex;align-items:center;gap:10px;pointer-events:auto}
@@ -260,6 +263,7 @@
 
   function render() {
     layer.replaceChildren();
+    const touch = matchMedia('(pointer: coarse)').matches;
     if (mode === 'off' || mode === 'compare') {
       if (mode === 'compare') renderCompare();
       const tools = el('div', { class: 'tools' });
@@ -296,19 +300,27 @@
     layer.append(svg);
     if (mode === 'draw' && !stroke.length) {
       const hint = el('div', { class: 'hint' });
-      hint.innerHTML = frozen ? '<b>Frozen</b> · circle or click what you mean · Esc to cancel' : 'Circle or click what you mean · Shift+` to freeze · Esc to cancel';
+      hint.innerHTML = touch ? (frozen ? '<b>Frozen</b> · circle or tap what you mean' : 'Circle or tap what you mean')
+        : frozen ? '<b>Frozen</b> · circle or click what you mean · Esc to cancel' : 'Circle or click what you mean · Shift+` to freeze · Esc to cancel';
+      const x = el('button', { class: 'link', type: 'button' }, 'Cancel'); x.onclick = cancelAll; hint.append(x);
       layer.append(hint);
     }
     if (mode === 'note') {
       const box = boxOf(stroke);
       const form = el('form');
-      form.style.left = `${Math.min(Math.max(8, box.left), innerWidth - 328)}px`;
+      form.style.left = `${Math.max(8, Math.min(box.left, innerWidth - 328))}px`;
+      form.style.maxWidth = 'calc(100vw - 16px)';
       form.style.top = `${box.top + box.height + 10 > innerHeight - 140 ? Math.max(8, box.top - 130) : box.top + box.height + 10}px`;
       const ta = el('textarea', { rows: 3, placeholder: 'What should change?' });
       const row = el('div', { class: 'row' });
       const redraw = el('button', { class: 'link', type: 'button' }, 'Redraw');
       redraw.onclick = () => { stroke = []; mode = 'draw'; render(); };
-      row.append(el('span', {}, 'Enter sends · Shift+Enter newline'), redraw);
+      // Touch keyboards don't reliably send Enter, so there are always Send and Cancel buttons.
+      const close = el('button', { class: 'link', type: 'button' }, 'Cancel'); close.onclick = cancelAll;
+      const go = el('button', { class: 'send', type: 'submit' }, 'Send');
+      const acts = el('span', { class: 'acts' });
+      row.append(el('span', {}, touch ? '' : 'Enter sends'), acts);
+      acts.append(close, redraw, go);
       form.append(ta, row);
       ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(ta.value); } e.stopPropagation(); });
       form.onsubmit = e => { e.preventDefault(); send(ta.value); };
