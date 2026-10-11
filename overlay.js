@@ -5,6 +5,7 @@
 (() => {
   if (window.__circleback) return;
   window.__circleback = true;
+  const TRACE = document.currentScript?.dataset.trace === '1'; // proxy started with --trace: offer ratings
   const BASE = '/__circleback';
   const PENDING = 'circleback-pending';
   const HISTORY = 'circleback-history';
@@ -413,6 +414,13 @@
       bar.append(b);
     }
     bar.append(el('span', {}, `“${compare.entry.note || ''}”`));
+    if (TRACE) {
+      for (const [verdict, label, title] of [['good', '👍', 'This fixed it'], ['bad', '👎', 'Not what I meant']]) {
+        const b = el('button', { type: 'button', title, 'aria-pressed': String(compare.entry.verdict === verdict) }, label);
+        b.onclick = () => rate(compare.entry, verdict);
+        bar.append(b);
+      }
+    }
     const close = el('button', { type: 'button', title: 'Close (Esc)' }, '✕');
     close.onclick = closeCompare;
     bar.append(close);
@@ -433,6 +441,16 @@
     before.style.left = `${Math.max(8, compare.x - 70)}px`;
     now.style.left = `${Math.min(innerWidth - 52, compare.x + 12)}px`;
     layer.append(divider, before, now);
+  }
+
+  async function rate(entry, verdict) {
+    entry.verdict = verdict; save(HISTORY, history); render();
+    const shot = takeSnapshot(); // the live page, as they judged it
+    try {
+      const res = await fetch(`${BASE}/rate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, verdict, snapshot: await shot.upload }) });
+      if (!res.ok) throw new Error(String(res.status));
+      toast(verdict === 'good' ? 'Marked good' : 'Marked not it');
+    } catch (e) { toast(`Rating failed (${e.message})`); }
   }
 
   // ---- Replies ----------------------------------------------------------------------------------------------------

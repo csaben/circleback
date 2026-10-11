@@ -6,12 +6,15 @@
 //   circleback [--target http://localhost:3000] [--port 3999] [--host 127.0.0.1] [--dir .circleback]
 //   circleback reply <note-id> <message...> [--dir .circleback]
 //   circleback watch [--dir .circleback]     # prints each new note as one JSON line
+//   circleback export [--out episodes.jsonl]  # traced notes joined into training episodes
+// With --trace, the proxy also records each note's code change and your thumbs up/down in .circleback/trace.jsonl.
 // Each note can carry a snapshot: a script-free copy of the page as it was, in .circleback/snapshots/.
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, openSync, readSync, closeSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,10 +26,12 @@ const flag = (name, fallback) => {
   argv.splice(i, 2);
   return value;
 };
+const toggle = name => { const i = argv.indexOf(`--${name}`); if (i !== -1) argv.splice(i, 1); return i !== -1; };
 const dir = resolve(flag('dir', process.env.CIRCLEBACK_DIR || '.circleback'));
 const inbox = join(dir, 'inbox.jsonl');
 const repliesFile = join(dir, 'replies.jsonl');
 const snapshotDir = join(dir, 'snapshots');
+const traceFile = join(dir, 'trace.jsonl');
 const SNAPSHOT_ID = /^[a-z0-9]{6,16}$/;
 
 function ensureDir() {
@@ -43,17 +48,92 @@ const readLines = file => existsSync(file)
 const command = argv[0] && !argv[0].startsWith('--') ? argv.shift() : 'serve';
 
 if (command === 'reply') {
+  const agent = flag('agent', process.env.CIRCLEBACK_AGENT);
+  const session = flag('session', process.env.CIRCLEBACK_SESSION);
   const [id, ...words] = argv;
-  if (!id || !words.length) { console.error('usage: circleback reply <note-id> <message...>'); process.exit(1); }
+  if (!id || !words.length) { console.error('usage: circleback reply <note-id> <message...> [--agent NAME] [--session ID]'); process.exit(1); }
   ensureDir();
-  appendFileSync(repliesFile, JSON.stringify({ id, at: new Date().toISOString(), text: words.join(' ') }) + '\n');
+  const at = new Date().toISOString();
+  appendFileSync(repliesFile, JSON.stringify({ id, at, text: words.join(' ') }) + '\n');
+  traceReply(id, at, { agent, session });
   console.log(`replied to ${id}`);
 } else if (command === 'watch') {
   watchInbox();
+} else if (command === 'export') {
+  exportEpisodes(flag('out'));
 } else if (command === 'serve') {
   serve();
 } else {
   console.error(`unknown command: ${command}`); process.exit(1);
+}
+
+// ---- Traces -------------------------------------------------------------------------------------------------------
+function git(args, env) {
+  return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'ignore'] });
+}
+
+// The whole working tree (tracked and untracked, minus ignored files) as a git tree object. A scratch index keeps
+// the user's staging area untouched.
+function worktree() {
+  try {
+    const index = join(dir, 'trace.index');
+    const real = resolve(git(['rev-parse', '--git-path', 'index']).trim());
+    if (existsSync(real)) copyFileSync(real, index);
+    git(['add', '-A'], { GIT_INDEX_FILE: index });
+    return git(['write-tree'], { GIT_INDEX_FILE: index }).trim();
+  } catch { return null; }
+}
+
+function traceReply(id, at, who) {
+  const events = readLines(traceFile);
+  const note = events.find(e => e.type === 'note' && e.id === id);
+  if (!note) return; // not traced
+  // Everything changed since the later of this note and the previous reply is this note's fix.
+  const base = events.filter(e => e.type === 'reply' && e.tree && e.at > note.at).pop()?.tree || note.tree;
+  const tree = worktree();
+  let diff = null;
+  try { if (base && tree) diff = git(['diff', '--no-color', '--no-ext-diff', base, tree]).slice(0, 500_000); } catch {}
+  appendFileSync(traceFile, JSON.stringify({ type: 'reply', id, at, base, tree, diff, ...who }) + '\n');
+}
+
+// Boxes count as the same spot when most of the smaller one sits inside the bigger one. Clicks get some slack.
+function sameSpot(a, b) {
+  if (!a || !b) return false;
+  const grow = r => ({ l: r.left - 16, t: r.top - 16, r: r.left + r.width + 16, b: r.top + r.height + 16 });
+  const p = grow(a), q = grow(b);
+  const ix = Math.max(0, Math.min(p.r, q.r) - Math.max(p.l, q.l)), iy = Math.max(0, Math.min(p.b, q.b) - Math.max(p.t, q.t));
+  const area = r => (r.r - r.l) * (r.b - r.t);
+  return (ix * iy) / Math.min(area(p), area(q)) > 0.5;
+}
+
+// One episode per traced note: what was circled and asked, the agent's change and reply, and how it landed.
+// outcome: good / bad (rated in compare), recircled (same spot circled again after the reply), unrated, unanswered.
+function exportEpisodes(out) {
+  const notes = readLines(inbox), replies = readLines(repliesFile), events = readLines(traceFile);
+  const traced = new Map(events.filter(e => e.type === 'note').map(e => [e.id, e]));
+  const list = notes.filter(n => traced.has(n.id));
+  const episodes = list.map((n, i) => {
+    const reply = replies.filter(r => r.id === n.id).pop();
+    const fixes = events.filter(e => e.type === 'reply' && e.id === n.id);
+    const rating = events.filter(e => e.type === 'rate' && e.id === n.id).pop();
+    const again = reply && list.slice(i + 1).find(m => m.at > reply.at && m.url === n.url && sameSpot(n.pageBox, m.pageBox));
+    const { snapshot, snapshotFile, ...request } = n;
+    return {
+      id: n.id,
+      at: n.at,
+      request,
+      agent: fixes.at(-1)?.agent,
+      session: fixes.at(-1)?.session,
+      reply: reply?.text,
+      diff: fixes.map(f => f.diff).filter(Boolean).join('\n'),
+      trees: { before: traced.get(n.id).tree, after: fixes.at(-1)?.tree },
+      snapshots: { before: snapshotFile, after: rating?.snapshotFile || again?.snapshotFile },
+      outcome: rating ? rating.verdict : again ? 'recircled' : reply ? 'unrated' : 'unanswered',
+      recircledBy: again?.id,
+    };
+  });
+  const text = episodes.map(e => JSON.stringify(e)).join('\n') + (episodes.length ? '\n' : '');
+  if (out) { writeFileSync(out, text); console.error(`${episodes.length} episodes -> ${resolve(out)}`); } else process.stdout.write(text);
 }
 
 function watchInbox() {
@@ -79,10 +159,11 @@ function serve() {
   const target = new URL(flag('target', process.env.CIRCLEBACK_TARGET || 'http://localhost:3000'));
   const port = Number(flag('port', process.env.CIRCLEBACK_PORT || 3999));
   const host = flag('host', process.env.CIRCLEBACK_HOST || '127.0.0.1');
+  const trace = toggle('trace') || process.env.CIRCLEBACK_TRACE === '1';
   const secure = target.protocol === 'https:';
   const targetPort = Number(target.port || (secure ? 443 : 80));
   const overlayFile = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay.js');
-  const tag = '<script src="/__circleback/overlay.js" defer></script>';
+  const tag = `<script src="/__circleback/overlay.js"${trace ? ' data-trace="1"' : ''} defer></script>`;
   ensureDir();
 
   const server = http.createServer((req, res) => {
@@ -149,10 +230,28 @@ function serve() {
         if (typeof note.snapshot === 'string' && SNAPSHOT_ID.test(note.snapshot)) entry.snapshotFile = join(snapshotDir, `${note.snapshot}.html`);
         else delete entry.snapshot;
         ensureDir();
+        // Record the code as it is before the agent sees the note.
+        if (trace) appendFileSync(traceFile, JSON.stringify({ type: 'note', id, at: entry.at, tree: worktree() }) + '\n');
         appendFileSync(inbox, JSON.stringify(entry) + '\n');
         console.log(`note ${id}: ${String(note.note).slice(0, 100)}`);
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ id }));
+      });
+      return;
+    }
+    if (url.pathname === '/__circleback/rate' && req.method === 'POST' && trace) {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 4_000) req.destroy(); });
+      req.on('end', () => {
+        let r;
+        try { r = JSON.parse(body); } catch { res.writeHead(400); return res.end('bad json'); }
+        if (!/^[a-z0-9]{1,16}$/.test(r.id) || !['good', 'bad'].includes(r.verdict)) { res.writeHead(400); return res.end('bad rating'); }
+        const entry = { type: 'rate', id: r.id, at: new Date().toISOString(), verdict: r.verdict };
+        // The live page they were looking at when they judged it.
+        if (typeof r.snapshot === 'string' && SNAPSHOT_ID.test(r.snapshot)) entry.snapshotFile = join(snapshotDir, `${r.snapshot}.html`);
+        appendFileSync(traceFile, JSON.stringify(entry) + '\n');
+        console.log(`rated ${r.id}: ${r.verdict}`);
+        res.writeHead(204); res.end();
       });
       return;
     }
@@ -189,5 +288,6 @@ function serve() {
   server.listen(port, host, () => {
     console.log(`circleback: http://${host === '0.0.0.0' ? 'localhost' : host}:${port} -> ${target.origin}`);
     console.log(`circleback: notes -> ${inbox}`);
+    if (trace) console.log(`circleback: tracing -> ${traceFile}`);
   });
 }

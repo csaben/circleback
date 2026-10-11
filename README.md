@@ -32,7 +32,9 @@ npx -y github:csaben/circleback --target http://localhost:3000   # your dev serv
 |---|---|
 | `circleback [--target URL] [--port 3999] [--host 127.0.0.1]` | Proxy with the overlay injected |
 | `circleback watch` | Print each new note as one JSON line (for agent monitors) |
-| `circleback reply <id> <message>` | Show a reply toast on the page for that note |
+| `circleback reply <id> <message> [--agent NAME] [--session ID]` | Show a reply toast on the page for that note |
+| `circleback --trace ...` | Also record traces for a training dataset (see below) |
+| `circleback export [--out FILE]` | Write traced notes as JSONL episodes |
 
 All commands take `--dir` (default `.circleback`). That folder holds `inbox.jsonl` and `replies.jsonl` and ignores itself in git.
 
@@ -41,6 +43,25 @@ All commands take `--dir` (default `.circleback`). That folder holds `inbox.json
 The note text, the page URL and title, viewport, scroll position, theme, the circled box (viewport and page coordinates), the element at the centre of the circle, and up to eight outermost elements inside it, each with tag, id, classes, a short CSS path, text and a few useful attributes.
 
 Every note also saves a **snapshot**: a script-free copy of the page as it looked when you started drawing, with styles copied in and hover/focus states pinned. The note's `snapshotFile` points at it in `.circleback/snapshots/`.
+
+## Traces
+
+Every circleback round is a labelled example of your taste: what you pointed at, what you asked for, what the agent changed, and whether it landed. Start the proxy with `--trace` (or `CIRCLEBACK_TRACE=1`) to keep them, whichever agent is doing the work.
+
+- When a note arrives, the project's working tree is recorded as a git tree. A scratch index is used, so your staging area is never touched.
+- When the agent runs `reply`, the code diff for that note is recorded. If it passes `--agent` and `--session` (or sets `CIRCLEBACK_AGENT` and `CIRCLEBACK_SESSION`), those are saved too, so the episode can be joined to the agent's own transcript.
+- The compare bar gets 👍 / 👎. Rating also saves a snapshot of the live page as you judged it.
+
+`circleback export` joins everything into one JSON line per note: `request` (the note), `reply`, `diff`, `trees` (before/after git trees), `snapshots` (before/after HTML) and `outcome`:
+
+| outcome | meaning |
+|---|---|
+| `good` / `bad` | you rated it in compare |
+| `recircled` | you circled the same spot again after the reply (`recircledBy` points at that note) |
+| `unrated` | answered, nothing else heard |
+| `unanswered` | no reply yet |
+
+Everything stays in `.circleback/`. Snapshots are full copies of your page, so check them before sharing a dataset.
 
 ## Keys
 

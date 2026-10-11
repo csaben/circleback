@@ -1,6 +1,6 @@
 {
   "name": "circleback",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Circle part of your running site, type what you mean, and Claude fixes it with hot reload.",
   "license": "MIT",
   "author": {

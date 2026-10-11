@@ -1,6 +1,6 @@
 {
   "name": "circleback",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Circle part of your running site, type what you mean, and your coding agent fixes it. A zero-dependency proxy that works with any dev server.",
   "type": "module",
   "bin": { "circleback": "bin/circleback.mjs" },

@@ -17,6 +17,7 @@ npx -y github:csaben/circleback --target http://localhost:3000 --port 3999
 
 - It injects the overlay into every HTML page and passes everything else through, including hot reload WebSockets. The project's code is not modified.
 - Notes go to `.circleback/inbox.jsonl` in the current directory. That folder ignores itself in git.
+- If the user asks to collect traces or build a dataset, add `--trace`. `npx -y github:csaben/circleback export --out episodes.jsonl` writes it out.
 - To reach it from another device (phone, tailnet), add `--host 0.0.0.0` or put it behind `tailscale serve`. Only do that if the user asks.
 
 Tell the user: open `http://localhost:3999`, press **`** (backtick) or the pink ✎ button, circle the thing, type the change, press Enter. **Shift+`** freezes the page first (keeps open menus and hover states while they circle). After a fix, **\** (or the ⇆ button, or "Compare" on your reply) shows the page before their note against the live page, with a draggable divider.
@@ -56,7 +57,7 @@ A note looks like:
 npx -y github:csaben/circleback reply <id> "Gave the hero more room; subtitle is a touch larger."
 ```
 
-One short sentence about what changed. It shows as a toast on the user's page, even after a reload. Also tell the user in chat. Then handle the next note. Notes arrive in order; work through them one at a time.
+One short sentence about what changed. It shows as a toast on the user's page, even after a reload. If you know your model name or session id, add `--agent <model> --session <id>` so traced runs can be matched to your transcript. Reply only once the fix is complete: when the user has turned on tracing, the code diff is recorded at reply time. Also tell the user in chat. Then handle the next note. Notes arrive in order; work through them one at a time.
 
 ## Notes
 
