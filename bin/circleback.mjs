@@ -190,10 +190,14 @@ function serve() {
   const builderFlag = flag('builder', process.env.CIRCLEBACK_BUILDER);
   const builder = builderFlag ? new URL(builderFlag) : null;
   const projectDir = process.cwd();
+  // One app per project: the builder keys its package id and "latest" download on these.
+  const appKey = { name: basename(projectDir), host: hostname() };
+  // How a phone reaches this proxy (e.g. https://inari.tailnet.ts.net:3999). Otherwise the page's own address is used.
+  const publicUrl = (flag('public-url', process.env.CIRCLEBACK_PUBLIC_URL) || '').replace(/\/+$/, '') || null;
   const secure = target.protocol === 'https:';
   const targetPort = Number(target.port || (secure ? 443 : 80));
   const overlayFile = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay.js');
-  const tag = `<script src="/__circleback/overlay.js"${trace ? ' data-trace="1"' : ''}${builder ? ' data-builder="1"' : ''} defer></script>`;
+  const tag = `<script src="/__circleback/overlay.js"${trace ? ' data-trace="1"' : ''}${builder ? ' data-builder="1"' : ''}${builder && publicUrl ? ` data-public="${encodeURI(publicUrl)}"` : ''} defer></script>`;
   ensureDir();
 
   const server = http.createServer((req, res) => {
@@ -246,7 +250,9 @@ function serve() {
   // localhost and the page never needs CORS.
   function toBuilder(method, path, body, res) {
     const out = (builder.protocol === 'https:' ? https : http).request(new URL(path, builder), { method, headers: body ? { 'content-type': 'application/json' } : {} }, up => {
-      res.writeHead(up.statusCode, { 'content-type': up.headers['content-type'] || 'application/json', 'cache-control': 'no-store' });
+      const headers = { 'content-type': up.headers['content-type'] || 'application/json', 'cache-control': 'no-store' };
+      for (const h of ['content-length', 'content-disposition']) if (up.headers[h]) headers[h] = up.headers[h]; // APK downloads
+      res.writeHead(up.statusCode, headers);
       up.pipe(res);
     });
     out.on('error', e => { res.writeHead(502, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: `can't reach builder at ${builder.origin} (${e.message})` })); });
@@ -254,8 +260,23 @@ function serve() {
   }
 
   // Pack this folder and stream it to the builder, which builds the copy it receives. Same path whether the builder
-  // runs here or on another machine.
-  function uploadBuild(res) {
+  // runs here or on another machine. kind picks the app: live (a shell that opens this circleback page), bundled
+  // (Capacitor with the built site inside) or native (Expo / React Native / Android project). edit is circleback's
+  // address as the phone reaches it: live apps load it, and every app's "Edit in circleback" escape hatch opens it.
+  function uploadBuild(req, res) {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 4_000) req.destroy(); });
+    req.on('end', () => {
+      let opts = {};
+      try { opts = body ? JSON.parse(body) : {}; } catch {}
+      const kind = ['live', 'bundled', 'native'].includes(opts.kind) ? opts.kind : 'bundled';
+      let edit = publicUrl;
+      if (!edit) try { const o = new URL(opts.origin); if (/^https?:$/.test(o.protocol)) edit = o.origin; } catch {}
+      sendProject(res, { kind, ...(edit ? { edit } : {}) });
+    });
+  }
+
+  function sendProject(res, extra) {
     let list;
     try { list = join(dir, 'upload-files.txt'); writeFileSync(list, sourceFiles(projectDir).join('\n') + '\n'); }
     catch (e) { res.writeHead(500, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: `couldn't list project files (${e.message})` })); }
@@ -264,7 +285,7 @@ function serve() {
       ref = git(['log', '-1', '--format=%h %s']).trim().slice(0, 80);
       if (git(['status', '--porcelain']).trim()) ref += ' (+uncommitted)';
     } catch {}
-    const q = new URLSearchParams({ name: basename(projectDir), host: hostname() });
+    const q = new URLSearchParams({ ...appKey, ...extra });
     if (ref) q.set('git', ref);
     // Windows 10+ ships bsdtar; prefer it over a Git-for-Windows GNU tar on PATH.
     const sysTar = process.env.SystemRoot && join(process.env.SystemRoot, 'System32', 'tar.exe');
@@ -286,11 +307,17 @@ function serve() {
     const url = new URL(req.url, 'http://x');
     if (builder && url.pathname.startsWith('/__circleback/build')) {
       let m;
-      if (url.pathname === '/__circleback/build' && req.method === 'POST') return uploadBuild(res);
+      if (url.pathname === '/__circleback/build' && req.method === 'POST') return uploadBuild(req, res);
       if (url.pathname === '/__circleback/build/qr.svg') return toBuilder('GET', `/qr.svg?u=${encodeURIComponent(url.searchParams.get('u') || '')}`, null, res);
       if ((m = url.pathname.match(/^\/__circleback\/build\/([\w-]+)$/))) return toBuilder('GET', `/api/builds/${m[1]}`, null, res);
       if ((m = url.pathname.match(/^\/__circleback\/build\/([\w-]+)\/log$/))) return toBuilder('GET', `/api/builds/${m[1]}/log.txt`, null, res);
       if ((m = url.pathname.match(/^\/__circleback\/build\/([\w-]+)\/cancel$/)) && req.method === 'POST') return toBuilder('POST', `/api/builds/${m[1]}/cancel`, null, res);
+    }
+    // APKs come through circleback too, so the phone only ever needs to reach this one address.
+    if (builder && url.pathname.startsWith('/__circleback/app/')) {
+      let m;
+      if (url.pathname === '/__circleback/app/latest.apk') return toBuilder('GET', `/api/apps/latest.apk?${new URLSearchParams(appKey)}`, null, res);
+      if ((m = url.pathname.match(/^\/__circleback\/app\/([\w-]+)\.apk$/))) return toBuilder('GET', `/api/builds/${m[1]}/app.apk`, null, res);
     }
     if (url.pathname === '/__circleback/overlay.js') {
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });

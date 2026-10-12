@@ -30,7 +30,7 @@ npx -y github:csaben/circleback --target http://localhost:3000   # your dev serv
 
 | Command | What it does |
 |---|---|
-| `circleback [--target URL] [--port 3999] [--host 127.0.0.1] [--builder URL]` | Proxy with the overlay injected |
+| `circleback [--target URL] [--port 3999] [--host 127.0.0.1] [--builder URL] [--public-url URL]` | Proxy with the overlay injected |
 | `circleback watch` | Print each new note as one JSON line (for agent monitors) |
 | `circleback reply <id> <message> [--agent NAME] [--session ID]` | Show a reply toast on the page for that note |
 | `circleback --trace ...` | Also record traces for a training dataset (see below) |
@@ -47,9 +47,43 @@ CIRCLEBACK_BUILDER=http://127.0.0.1:7400 npx -y github:csaben/circleback --targe
 # or: --builder http://127.0.0.1:7400
 ```
 
-📱 packs up the folder circleback runs in (what git sees, plus root `.env*` files) and uploads it to the builder, which builds an Android app. The panel shows progress, then a QR code to scan and install. The builder can be on this machine or any other one you can reach, so you can run circleback on a laptop and build on a beefier box. The QR points at the project's *latest* build, so the same code keeps working after every rebuild. If the project isn't an app yet, the panel offers **Make it an app**, which sends your agent a note to wrap the site with Capacitor. If a build fails, **Ask agent to fix** sends it a link to the build log.
+The loop: open circleback in your phone's Chrome over the tailnet, edit by circling, and when you like it tap 📱 and pick what to build:
 
-A builder is any server with this small API: `POST /api/builds/upload?name=&host=&git=` (body: the project as .tar.gz), `GET /api/builds/:id`, `GET /api/builds/:id/log.txt`, `POST /api/builds/:id/cancel`, `GET /qr.svg?u=`. The page only talks to the proxy, which relays these calls, so the page never needs CORS.
+| Kind | What you get |
+|---|---|
+| **Live** | A tiny app that opens this circleback page. Edits show up instantly and ✎ works inside the app. Needs the tailnet. |
+| **Bundled** | The built site packed inside (Capacitor). Works offline. |
+| **Native** | An Expo, React Native or Android project, built as is. |
+
+📱 packs up the folder circleback runs in (what git sees, plus root `.env*` files) and uploads it to the builder, which can be this machine or any other you can reach. The panel shows progress, then a QR code. The APK is served **through circleback**, so the phone only ever needs to reach circleback's address, and the QR points at the project's *latest* build, so it keeps working after every rebuild. Each project is its own app; rebuilding updates it in place.
+
+Every app keeps a way back to the editor that doesn't depend on your web code: long-press the app icon → **Edit in circleback**, and a native fallback screen with **Open editor** if the page fails to load. A broken app is always one tap from being fixed.
+
+If the project isn't an app yet, the panel offers **Make it an app** (Capacitor) or **Port to native**, which send your agent a note. If a build fails, **Ask agent to fix** sends it a link to the build log.
+
+Circleback needs to know how your phone reaches it. When you open the page over the tailnet it uses that address; otherwise pass `--public-url https://<machine>.<tailnet>.ts.net:3999` (or `CIRCLEBACK_PUBLIC_URL`).
+
+### Builder API
+
+A builder is any server with this API. The page only talks to the proxy, which relays these calls.
+
+| Call | |
+|---|---|
+| `POST /api/builds/upload?name=&host=&kind=&edit=&git=` | Body: the project as .tar.gz. `kind` is `live`, `bundled` or `native`. `edit` is circleback's phone-reachable address (may be missing). Returns the build as JSON, or 404 when there is nothing of that kind to build. |
+| `GET /api/builds/:id` | `{ id, status: queued\|running\|success\|failed\|cancelled, step, projectName, versionName, startedAt }` |
+| `GET /api/builds/:id/log.txt` | Build log |
+| `POST /api/builds/:id/cancel` | |
+| `GET /api/builds/:id/app.apk` | That build's APK |
+| `GET /api/apps/latest.apk?name=&host=` | The newest successful APK for that project |
+| `GET /qr.svg?u=` | QR code for a URL |
+
+What a builder should do with `kind` and `edit`:
+
+- One app per `name` + `host`: a stable package id and one signing key, so a rebuild installs over the old one.
+- **live**: a WebView shell that loads `edit`. No web build needed, so it should take seconds.
+- **bundled**: Capacitor with the built web output inside.
+- **native**: build the Expo / React Native / Android project that is there; 404 if there is none.
+- Every kind, when `edit` is set: a launcher shortcut **Edit in circleback** that opens `edit` in the browser, and a native error screen (load failure, crash on start) with **Open editor** and **Retry**. Both live in the native layer so they work when the web code is broken.
 
 ## What a note contains
 

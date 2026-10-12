@@ -56,6 +56,11 @@
     .buildbox img{display:block;width:100%;margin:10px 0 6px;border-radius:6px;background:#fff}
     .buildbox .acts{margin-top:10px;justify-content:space-between}
     .buildbox a.link{color:#93c5fd}
+    .kind{display:block;width:100%;margin-top:8px;padding:8px 10px;border:1px solid #333;border-radius:7px;background:#1c1c1c;color:#fff;text-align:left;cursor:pointer}
+    .kind:hover:not(:disabled){border-color:#ff3b6b}
+    .kind:disabled{opacity:.55;cursor:default}
+    .kind b{display:block;font-weight:600}
+    .kind span{display:block;color:#aaa;font-size:12px;margin-top:2px}
     .tag{position:fixed;top:60px;padding:3px 8px;border-radius:5px;background:rgba(17,17,17,.85);color:#fff;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
   </style><div class="stage"></div><div class="layer"></div><div class="toasts"></div>`;
   const stage = root.querySelector('.stage');
@@ -287,7 +292,7 @@
       if (BUILDER) {
         const busy = build && (build.status === 'queued' || build.status === 'running');
         const app = el('button', { class: `app${busy ? ' busy' : ''}`, type: 'button', title: 'Build this as an Android app and get an install QR' }, '📱');
-        app.onclick = () => (build ? closeBuild(busy) : startBuild());
+        app.onclick = () => (build ? closeBuild(busy) : setBuild({ status: 'pick' }));
         tools.append(app);
         if (build) renderBuild();
       }
@@ -478,16 +483,24 @@
   const setBuild = b => { build = b; save(BUILD, b); render(); };
   const elapsed = t => { const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000)); return `${s / 60 | 0}:${String(s % 60).padStart(2, '0')}`; };
 
-  async function startBuild() {
-    setBuild({ status: 'queued', step: 'Uploading project', startedAt: new Date().toISOString() });
+  // How a phone reaches circleback: --public-url if given, else this page's address unless it's loopback.
+  const PUBLIC = document.currentScript?.dataset.public || (/^(localhost|127\.|\[::1\])/.test(location.hostname) ? null : location.origin);
+  const KINDS = [
+    ['live', 'Live', 'Tiny app that opens this page. Edits show up instantly, ✎ works inside it. Needs the tailnet.'],
+    ['bundled', 'Bundled', 'The built site packed inside (Capacitor). Works offline.'],
+    ['native', 'Native', 'Expo, React Native or Android project. Full native app.'],
+  ];
+
+  async function startBuild(kind = build?.kind || 'bundled') {
+    setBuild({ kind, status: 'queued', step: 'Uploading project', startedAt: new Date().toISOString() });
     try {
-      const res = await fetch(`${BASE}/build`, { method: 'POST' });
+      const res = await fetch(`${BASE}/build`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind, origin: PUBLIC }) });
       const body = await res.json();
-      if (res.status === 404) return setBuild({ status: 'not-app' });
+      if (res.status === 404) return setBuild({ kind, status: 'not-app' });
       if (!res.ok) throw new Error(body.error || res.status);
-      setBuild({ ...body, startedAt: body.startedAt || body.createdAt });
+      setBuild({ kind, ...body, startedAt: body.startedAt || body.createdAt });
       pollBuild();
-    } catch (e) { setBuild({ status: 'error', error: e.message }); }
+    } catch (e) { setBuild({ kind, status: 'error', error: e.message }); }
   }
 
   async function pollBuild() {
@@ -496,7 +509,7 @@
       const res = await fetch(`${BASE}/build/${build.id}`);
       if (res.ok) {
         const b = await res.json();
-        if (build?.id === b.id) setBuild({ ...b, startedAt: b.startedAt || b.createdAt });
+        if (build?.id === b.id) setBuild({ kind: build.kind, ...b, startedAt: b.startedAt || b.createdAt });
       }
     } catch {}
     if (['queued', 'running'].includes(build?.status)) setTimeout(pollBuild, 2500);
@@ -532,7 +545,18 @@
     const sub = text => el('div', { class: 'sub' }, text);
     const link = (href, text) => { const a = el('a', { class: 'link', href, target: '_blank', rel: 'noopener' }, text); return a; };
     const acts = el('div', { class: 'acts' });
-    if (running) {
+    if (build.status === 'pick') {
+      top.append(el('span', {}, 'Build an app'), x);
+      box.append(top);
+      for (const [kind, label, help] of KINDS) {
+        const live = kind === 'live';
+        const b = el('button', { class: 'kind', type: 'button' });
+        b.append(el('b', {}, label), el('span', {}, live && !PUBLIC ? 'Needs an address your phone can reach: open this page over the tailnet, or start circleback with --public-url.' : help));
+        if (live && !PUBLIC) b.disabled = true;
+        b.onclick = () => startBuild(kind);
+        box.append(b);
+      }
+    } else if (running) {
       top.append(el('span', {}, `Building ${build.projectName || 'app'}… ${elapsed(build.startedAt)}`), x);
       box.append(top, sub(build.step || (build.status === 'queued' ? 'Waiting in queue' : 'Starting')));
       const stop = el('button', { class: 'link', type: 'button' }, 'Cancel build');
@@ -541,23 +565,30 @@
       if (build.dashboardUrl) acts.append(link(build.dashboardUrl, 'Full log'));
     } else if (build.status === 'success') {
       top.append(el('span', {}, `${build.projectName} ${build.versionName || ''} is ready`), x);
-      // The latest-build link never goes stale, so the same QR works after every rebuild.
-      const target = build.latestUrl || build.installUrl;
-      box.append(top, el('img', { src: `${BASE}/build/qr.svg?u=${encodeURIComponent(target)}`, alt: 'Install QR code' }), sub('Scan with your phone to install'));
+      // Served through circleback, so the phone needs no route to the builder. "latest" never goes stale, so the
+      // same QR keeps working after every rebuild.
+      if (PUBLIC) box.append(top, el('img', { src: `${BASE}/build/qr.svg?u=${encodeURIComponent(`${PUBLIC}${BASE}/app/latest.apk`)}`, alt: 'Install QR code' }), sub('Scan with your phone to install'));
+      else box.append(top, sub('Open this page from your phone to install, or start circleback with --public-url for a QR code.'));
       const again = el('button', { class: 'send', type: 'button' }, 'Rebuild');
-      again.onclick = startBuild;
-      acts.append(link(build.installUrl, 'Install page'), again);
+      again.onclick = () => startBuild();
+      acts.append(link(`${BASE}/app/${build.id}.apk`, 'Download APK'), again);
     } else if (build.status === 'not-app') {
-      top.append(el('span', {}, 'Not an app yet'), x);
-      box.append(top, sub('This project has no Android app to build. Your agent can wrap it as one (Capacitor), then tap 📱 again.'));
-      const ask = el('button', { class: 'send', type: 'button' }, 'Make it an app');
-      ask.onclick = () => noteToAgent('Make this project installable as an Android app so the 📱 button can build it (see "make-app" in the circleback skill).', { kind: 'make-app' });
-      acts.append(el('span'), ask);
+      const native = build.kind === 'native';
+      top.append(el('span', {}, native ? 'No native app yet' : 'Not an app yet'), x);
+      box.append(top, sub(native ? 'This project has no Expo, React Native or Android project. Your agent can port it, then tap 📱 again.'
+        : 'This project has no Android app to build. Your agent can wrap it as one (Capacitor), then tap 📱 again.'));
+      const ask = el('button', { class: 'send', type: 'button' }, native ? 'Port to native' : 'Make it an app');
+      ask.onclick = () => native
+        ? noteToAgent('Port this project to a native Android app the 📱 button can build (see "make-native" in the circleback skill).', { kind: 'make-native' })
+        : noteToAgent('Make this project installable as an Android app so the 📱 button can build it (see "make-app" in the circleback skill).', { kind: 'make-app' });
+      const back = el('button', { class: 'link', type: 'button' }, 'Other kinds');
+      back.onclick = () => setBuild({ status: 'pick' });
+      acts.append(back, ask);
     } else {
       top.append(el('span', {}, build.status === 'cancelled' ? 'Build cancelled' : 'Build failed'), x);
       box.append(top, sub(build.error || (build.step ? `Stopped at: ${build.step}` : '')));
       const again = el('button', { class: 'link', type: 'button' }, 'Retry');
-      again.onclick = startBuild;
+      again.onclick = () => startBuild();
       acts.append(again);
       if (build.status === 'failed' && build.id) {
         const fix = el('button', { class: 'send', type: 'button' }, 'Ask agent to fix');
