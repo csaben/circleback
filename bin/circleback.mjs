@@ -9,15 +9,16 @@
 //   circleback export [--out episodes.jsonl]  # traced notes joined into training episodes
 // With --trace, the proxy also records each note's code change and your thumbs up/down in .circleback/trace.jsonl.
 // Each note can carry a snapshot: a script-free copy of the page as it was, in .circleback/snapshots/.
-// With --builder URL (or CIRCLEBACK_BUILDER), the overlay gets a 📱 button that asks that build server
-// (clark-expo's API) to build this folder as an Android app and shows the install QR on the page.
+// With --builder URL (or CIRCLEBACK_BUILDER), the overlay gets a 📱 button: the proxy packs up this folder,
+// uploads it to that build server (local or on another machine), and the page shows progress and an install QR.
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
-import { execFileSync } from 'node:child_process';
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, openSync, readSync, closeSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync, openSync, readSync, closeSync } from 'node:fs';
+import { hostname } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const argv = process.argv.slice(2);
@@ -72,6 +73,30 @@ if (command === 'reply') {
 // ---- Traces -------------------------------------------------------------------------------------------------------
 function git(args, env) {
   return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'ignore'] });
+}
+
+// Files to ship to a phone builder: what git would see (tracked + untracked, minus ignored) plus root .env files,
+// which apps often need at build time. Outside git, everything except dependency and build output folders.
+const SKIP_DIRS = new Set(['node_modules', '.git', '.circleback', '.gradle', '.expo', '.next', '.dart_tool', '.turbo', '.cache', 'Pods']);
+function sourceFiles(root) {
+  const envs = readdirSync(root).filter(f => /^\.env/.test(f) && statSync(join(root, f)).isFile());
+  try {
+    const listed = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 256 << 20, stdio: ['ignore', 'pipe', 'ignore'] })
+      .split('\0').filter(f => f && existsSync(join(root, f)));
+    return [...new Set([...listed, ...envs])];
+  } catch {}
+  const out = [];
+  const walk = rel => {
+    for (const e of readdirSync(join(root, rel), { withFileTypes: true })) {
+      const p = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (SKIP_DIRS.has(e.name) || (e.name === 'build' && /(^|\/)(android|ios)(\/app)?$/.test(rel))) continue;
+        walk(p);
+      } else if (e.isFile()) out.push(p);
+    }
+  };
+  walk('');
+  return out;
 }
 
 // The whole working tree (tracked and untracked, minus ignored files) as a git tree object. A scratch index keeps
@@ -228,13 +253,43 @@ function serve() {
     out.end(body ? JSON.stringify(body) : undefined);
   }
 
+  // Pack this folder and stream it to the builder, which builds the copy it receives. Same path whether the builder
+  // runs here or on another machine.
+  function uploadBuild(res) {
+    let list;
+    try { list = join(dir, 'upload-files.txt'); writeFileSync(list, sourceFiles(projectDir).join('\n') + '\n'); }
+    catch (e) { res.writeHead(500, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: `couldn't list project files (${e.message})` })); }
+    let ref = null;
+    try {
+      ref = git(['log', '-1', '--format=%h %s']).trim().slice(0, 80);
+      if (git(['status', '--porcelain']).trim()) ref += ' (+uncommitted)';
+    } catch {}
+    const q = new URLSearchParams({ name: basename(projectDir), host: hostname() });
+    if (ref) q.set('git', ref);
+    // Windows 10+ ships bsdtar; prefer it over a Git-for-Windows GNU tar on PATH.
+    const sysTar = process.env.SystemRoot && join(process.env.SystemRoot, 'System32', 'tar.exe');
+    const tar = spawn(sysTar && existsSync(sysTar) ? sysTar : 'tar', ['-czf', '-', '-T', list], { cwd: projectDir, stdio: ['ignore', 'pipe', 'pipe'] });
+    let tarErr = '';
+    tar.stderr.on('data', d => (tarErr += d));
+    const fail = (code, error) => { if (res.headersSent) return; res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error })); };
+    tar.on('error', e => { up.destroy(); fail(500, `tar failed: ${e.message}`); });
+    tar.on('close', code => { if (code !== 0) { up.destroy(); fail(500, `tar failed: ${tarErr.trim().slice(0, 300)}`); } });
+    const up = (builder.protocol === 'https:' ? https : http).request(new URL(`/api/builds/upload?${q}`, builder), { method: 'POST', headers: { 'content-type': 'application/gzip' } }, r => {
+      res.writeHead(r.statusCode, { 'content-type': r.headers['content-type'] || 'application/json', 'cache-control': 'no-store' });
+      r.pipe(res);
+    });
+    up.on('error', e => fail(502, `can't reach builder at ${builder.origin} (${e.message})`));
+    tar.stdout.pipe(up);
+  }
+
   function own(req, res) {
     const url = new URL(req.url, 'http://x');
     if (builder && url.pathname.startsWith('/__circleback/build')) {
       let m;
-      if (url.pathname === '/__circleback/build' && req.method === 'POST') return toBuilder('POST', '/api/builds', { dir: projectDir }, res);
+      if (url.pathname === '/__circleback/build' && req.method === 'POST') return uploadBuild(res);
       if (url.pathname === '/__circleback/build/qr.svg') return toBuilder('GET', `/qr.svg?u=${encodeURIComponent(url.searchParams.get('u') || '')}`, null, res);
       if ((m = url.pathname.match(/^\/__circleback\/build\/([\w-]+)$/))) return toBuilder('GET', `/api/builds/${m[1]}`, null, res);
+      if ((m = url.pathname.match(/^\/__circleback\/build\/([\w-]+)\/log$/))) return toBuilder('GET', `/api/builds/${m[1]}/log.txt`, null, res);
       if ((m = url.pathname.match(/^\/__circleback\/build\/([\w-]+)\/cancel$/)) && req.method === 'POST') return toBuilder('POST', `/api/builds/${m[1]}/cancel`, null, res);
     }
     if (url.pathname === '/__circleback/overlay.js') {

@@ -47,9 +47,9 @@ CIRCLEBACK_BUILDER=http://127.0.0.1:7400 npx -y github:csaben/circleback --targe
 # or: --builder http://127.0.0.1:7400
 ```
 
-📱 builds the folder circleback runs in as an Android app, shows progress, then shows a QR code to scan and install. The QR points at the project's *latest* build, so the same code keeps working after every rebuild. If the project isn't an app yet, the panel offers **Make it an app**, which sends your agent a note to wrap the site with Capacitor. If a build fails, **Ask agent to fix** sends it the build log.
+📱 packs up the folder circleback runs in (what git sees, plus root `.env*` files) and uploads it to the builder, which builds an Android app. The panel shows progress, then a QR code to scan and install. The builder can be on this machine or any other one you can reach, so you can run circleback on a laptop and build on a beefier box. The QR points at the project's *latest* build, so the same code keeps working after every rebuild. If the project isn't an app yet, the panel offers **Make it an app**, which sends your agent a note to wrap the site with Capacitor. If a build fails, **Ask agent to fix** sends it a link to the build log.
 
-The builder is anything that speaks clark-expo's small API: `POST /api/builds {dir}`, `GET /api/builds/:id`, `POST /api/builds/:id/cancel`, `GET /qr.svg?u=`. The page only talks to the proxy, which relays these calls, so the builder can stay on localhost.
+A builder is any server with this small API: `POST /api/builds/upload?name=&host=&git=` (body: the project as .tar.gz), `GET /api/builds/:id`, `GET /api/builds/:id/log.txt`, `POST /api/builds/:id/cancel`, `GET /qr.svg?u=`. The page only talks to the proxy, which relays these calls, so the page never needs CORS.
 
 ## What a note contains
 

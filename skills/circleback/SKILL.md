@@ -18,7 +18,7 @@ npx -y github:csaben/circleback --target http://localhost:3000 --port 3999
 - It injects the overlay into every HTML page and passes everything else through, including hot reload WebSockets. The project's code is not modified.
 - Notes go to `.circleback/inbox.jsonl` in the current directory. That folder ignores itself in git.
 - If the user asks to collect traces or build a dataset, add `--trace`. `npx -y github:csaben/circleback export --out episodes.jsonl` writes it out.
-- If `CIRCLEBACK_BUILDER` is set in the environment (or the user asks for phone builds), the proxy picks it up and the overlay gets a 📱 button that builds this folder as an Android app and shows an install QR. To pass it explicitly: `--builder http://127.0.0.1:7400`.
+- Phone builds (📱 button) are optional; see section 5. Only add `--builder` when one is chosen.
 - To reach it from another device (phone, tailnet), add `--host 0.0.0.0` or put it behind `tailscale serve`. Only do that if the user asks.
 
 Tell the user: open `http://localhost:3999`, press **`** (backtick) or the pink ✎ button, circle the thing, type the change, press Enter. **Shift+`** freezes the page first (keeps open menus and hover states while they circle). After a fix, **\** (or the ⇆ button, or "Compare" on your reply) shows the page before their note against the live page, with a draggable divider.
@@ -60,7 +60,7 @@ A note looks like:
   3. `npx cap init "<App Name>" <reverse.domain.appid> --web-dir <output dir>`. Don't run `cap add android`; the builder does that on its side.
   4. If the site calls a dev-only backend (`localhost` APIs, a dev proxy), point those calls at a URL the phone can reach and say so in your reply.
   Projects that are already Expo, React Native, Flutter or native Android need no conversion. Reply with what you did and ask them to tap 📱 again.
-- `"kind": "build-failed"`: read `logPath` (the end of it usually has the error), fix the project, and reply asking them to tap 📱 → Retry. Build output lives in the builder's own copy of the project, so fix the source here, never the copy.
+- `"kind": "build-failed"`: fetch the build log with `curl -s <logUrl>` (it goes through the proxy, so it works even when the builder is another machine; the end usually has the error). Fix the project here and reply asking them to tap 📱 → Retry. The builder only builds an uploaded copy, so every fix belongs in this folder.
 
 ## 4. Reply on the page
 
@@ -69,6 +69,19 @@ npx -y github:csaben/circleback reply <id> "Gave the hero more room; subtitle is
 ```
 
 One short sentence about what changed. It shows as a toast on the user's page, even after a reload. If you know your model name or session id, add `--agent <model> --session <id>` so traced runs can be matched to your transcript. Reply only once the fix is complete: when the user has turned on tracing, the code diff is recorded at reply time. Also tell the user in chat. Then handle the next note. Notes arrive in order; work through them one at a time.
+
+## 5. Phone builds (optional)
+
+With `--builder <URL>` (or `CIRCLEBACK_BUILDER` in the environment) the overlay gets a 📱 button. Tapping it makes the proxy pack up this folder (git-tracked and untracked files minus ignored ones, plus root `.env*` files) and upload it to that build server, which builds an Android APK and the page shows an install QR. The build happens on the builder's machine, so it works the same whether that is this machine or another one on the network.
+
+Pick the builder from what the user says:
+
+- They name a machine ("build on <machine>"): use that machine's builder URL. On a tailnet, `tailscale status` lists machines; the URL usually looks like `https://<machine>.<tailnet>.ts.net:<port>`. Ask for the port if you can't find it.
+- They say to build on this machine: use a builder on localhost (`http://127.0.0.1:<port>`). One must be running here.
+- They say nothing and `CIRCLEBACK_BUILDER` is set: use it.
+- Otherwise, if they want phone builds, ask once which machine should build.
+
+Check a builder before starting the proxy: `curl -s <URL>/api/config` returns JSON. Changing builders means restarting the proxy with the new `--builder`.
 
 ## Notes
 

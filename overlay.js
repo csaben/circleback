@@ -473,13 +473,13 @@
   }
 
   // ---- Phone builds (proxy started with --builder) ---------------------------------------------------------------
-  // The proxy relays these to the build server, which builds the folder circleback runs in and serves the APK.
+  // The proxy packs up the folder circleback runs in and uploads it to the build server, which builds and serves the APK.
   // State lives in sessionStorage so a hot reload mid-build keeps showing progress.
   const setBuild = b => { build = b; save(BUILD, b); render(); };
   const elapsed = t => { const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000)); return `${s / 60 | 0}:${String(s % 60).padStart(2, '0')}`; };
 
   async function startBuild() {
-    setBuild({ status: 'queued', startedAt: new Date().toISOString() });
+    setBuild({ status: 'queued', step: 'Uploading project', startedAt: new Date().toISOString() });
     try {
       const res = await fetch(`${BASE}/build`, { method: 'POST' });
       const body = await res.json();
@@ -559,9 +559,9 @@
       const again = el('button', { class: 'link', type: 'button' }, 'Retry');
       again.onclick = startBuild;
       acts.append(again);
-      if (build.status === 'failed' && build.logPath) {
+      if (build.status === 'failed' && build.id) {
         const fix = el('button', { class: 'send', type: 'button' }, 'Ask agent to fix');
-        fix.onclick = () => noteToAgent(`The Android build failed${build.step ? ` at "${build.step}"` : ''}. Read the log, fix the project, then tell me to tap 📱 again.`, { kind: 'build-failed', buildId: build.id, logPath: build.logPath });
+        fix.onclick = () => noteToAgent(`The Android build failed${build.step ? ` at "${build.step}"` : ''}. Read the log, fix the project, then tell me to tap 📱 again.`, { kind: 'build-failed', buildId: build.id, logUrl: `${location.origin}${BASE}/build/${build.id}/log` });
         acts.append(fix);
       }
     }
