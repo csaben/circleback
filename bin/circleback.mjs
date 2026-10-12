@@ -9,6 +9,8 @@
 //   circleback export [--out episodes.jsonl]  # traced notes joined into training episodes
 // With --trace, the proxy also records each note's code change and your thumbs up/down in .circleback/trace.jsonl.
 // Each note can carry a snapshot: a script-free copy of the page as it was, in .circleback/snapshots/.
+// With --builder URL (or CIRCLEBACK_BUILDER), the overlay gets a 📱 button that asks that build server
+// (clark-expo's API) to build this folder as an Android app and shows the install QR on the page.
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
@@ -160,10 +162,13 @@ function serve() {
   const port = Number(flag('port', process.env.CIRCLEBACK_PORT || 3999));
   const host = flag('host', process.env.CIRCLEBACK_HOST || '127.0.0.1');
   const trace = toggle('trace') || process.env.CIRCLEBACK_TRACE === '1';
+  const builderFlag = flag('builder', process.env.CIRCLEBACK_BUILDER);
+  const builder = builderFlag ? new URL(builderFlag) : null;
+  const projectDir = process.cwd();
   const secure = target.protocol === 'https:';
   const targetPort = Number(target.port || (secure ? 443 : 80));
   const overlayFile = join(dirname(fileURLToPath(import.meta.url)), '..', 'overlay.js');
-  const tag = `<script src="/__circleback/overlay.js"${trace ? ' data-trace="1"' : ''} defer></script>`;
+  const tag = `<script src="/__circleback/overlay.js"${trace ? ' data-trace="1"' : ''}${builder ? ' data-builder="1"' : ''} defer></script>`;
   ensureDir();
 
   const server = http.createServer((req, res) => {
@@ -212,8 +217,26 @@ function serve() {
     socket.on('error', () => up.destroy());
   });
 
+  // Relay a request to the build server. The page only ever talks to the proxy, so the builder can stay on
+  // localhost and the page never needs CORS.
+  function toBuilder(method, path, body, res) {
+    const out = (builder.protocol === 'https:' ? https : http).request(new URL(path, builder), { method, headers: body ? { 'content-type': 'application/json' } : {} }, up => {
+      res.writeHead(up.statusCode, { 'content-type': up.headers['content-type'] || 'application/json', 'cache-control': 'no-store' });
+      up.pipe(res);
+    });
+    out.on('error', e => { res.writeHead(502, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: `can't reach builder at ${builder.origin} (${e.message})` })); });
+    out.end(body ? JSON.stringify(body) : undefined);
+  }
+
   function own(req, res) {
     const url = new URL(req.url, 'http://x');
+    if (builder && url.pathname.startsWith('/__circleback/build')) {
+      let m;
+      if (url.pathname === '/__circleback/build' && req.method === 'POST') return toBuilder('POST', '/api/builds', { dir: projectDir }, res);
+      if (url.pathname === '/__circleback/build/qr.svg') return toBuilder('GET', `/qr.svg?u=${encodeURIComponent(url.searchParams.get('u') || '')}`, null, res);
+      if ((m = url.pathname.match(/^\/__circleback\/build\/([\w-]+)$/))) return toBuilder('GET', `/api/builds/${m[1]}`, null, res);
+      if ((m = url.pathname.match(/^\/__circleback\/build\/([\w-]+)\/cancel$/)) && req.method === 'POST') return toBuilder('POST', `/api/builds/${m[1]}/cancel`, null, res);
+    }
     if (url.pathname === '/__circleback/overlay.js') {
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
       return res.end(readFileSync(overlayFile)); // read per request, so overlay edits apply on reload
@@ -289,5 +312,6 @@ function serve() {
     console.log(`circleback: http://${host === '0.0.0.0' ? 'localhost' : host}:${port} -> ${target.origin}`);
     console.log(`circleback: notes -> ${inbox}`);
     if (trace) console.log(`circleback: tracing -> ${traceFile}`);
+    if (builder) console.log(`circleback: 📱 builds -> ${builder.origin} (${projectDir})`);
   });
 }

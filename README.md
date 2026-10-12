@@ -30,13 +30,26 @@ npx -y github:csaben/circleback --target http://localhost:3000   # your dev serv
 
 | Command | What it does |
 |---|---|
-| `circleback [--target URL] [--port 3999] [--host 127.0.0.1]` | Proxy with the overlay injected |
+| `circleback [--target URL] [--port 3999] [--host 127.0.0.1] [--builder URL]` | Proxy with the overlay injected |
 | `circleback watch` | Print each new note as one JSON line (for agent monitors) |
 | `circleback reply <id> <message> [--agent NAME] [--session ID]` | Show a reply toast on the page for that note |
 | `circleback --trace ...` | Also record traces for a training dataset (see below) |
 | `circleback export [--out FILE]` | Write traced notes as JSONL episodes |
 
 All commands take `--dir` (default `.circleback`). That folder holds `inbox.jsonl` and `replies.jsonl` and ignores itself in git.
+
+## Build it for your phone (optional)
+
+Point circleback at an APK build server and the overlay grows a 📱 button:
+
+```bash
+CIRCLEBACK_BUILDER=http://127.0.0.1:7400 npx -y github:csaben/circleback --target http://localhost:3000
+# or: --builder http://127.0.0.1:7400
+```
+
+📱 builds the folder circleback runs in as an Android app, shows progress, then shows a QR code to scan and install. The QR points at the project's *latest* build, so the same code keeps working after every rebuild. If the project isn't an app yet, the panel offers **Make it an app**, which sends your agent a note to wrap the site with Capacitor. If a build fails, **Ask agent to fix** sends it the build log.
+
+The builder is anything that speaks clark-expo's small API: `POST /api/builds {dir}`, `GET /api/builds/:id`, `POST /api/builds/:id/cancel`, `GET /qr.svg?u=`. The page only talks to the proxy, which relays these calls, so the builder can stay on localhost.
 
 ## What a note contains
 

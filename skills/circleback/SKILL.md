@@ -18,6 +18,7 @@ npx -y github:csaben/circleback --target http://localhost:3000 --port 3999
 - It injects the overlay into every HTML page and passes everything else through, including hot reload WebSockets. The project's code is not modified.
 - Notes go to `.circleback/inbox.jsonl` in the current directory. That folder ignores itself in git.
 - If the user asks to collect traces or build a dataset, add `--trace`. `npx -y github:csaben/circleback export --out episodes.jsonl` writes it out.
+- If `CIRCLEBACK_BUILDER` is set in the environment (or the user asks for phone builds), the proxy picks it up and the overlay gets a 📱 button that builds this folder as an Android app and shows an install QR. To pass it explicitly: `--builder http://127.0.0.1:7400`.
 - To reach it from another device (phone, tailnet), add `--host 0.0.0.0` or put it behind `tailscale serve`. Only do that if the user asks.
 
 Tell the user: open `http://localhost:3999`, press **`** (backtick) or the pink ✎ button, circle the thing, type the change, press Enter. **Shift+`** freezes the page first (keeps open menus and hover states while they circle). After a fix, **\** (or the ⇆ button, or "Compare" on your reply) shows the page before their note against the live page, with a draggable divider.
@@ -50,6 +51,16 @@ A note looks like:
 - If the note is vague ("looks off", "make it nicer"), make a confident, tasteful attempt rather than asking. They can circle it again.
 - If you can take screenshots (Playwright, a browser tool), check your change at the note's `viewport`, `scroll` and `theme` before replying. If the screenshot shows a problem, fix it first.
 - Run the project's fast checks (typecheck, lint) when you touched logic.
+
+### Notes with a `kind` (from the 📱 button)
+
+- `"kind": "make-app"`: the user wants this site installable on their phone, and the builder found no app here. Wrap the existing site with Capacitor rather than rewriting it:
+  1. Make sure the web build outputs static files (Vite/Astro: `dist`; Next: set `output: 'export'`, output is `out`; plain HTML: the folder holding `index.html`).
+  2. `npm i @capacitor/core @capacitor/android && npm i -D @capacitor/cli`
+  3. `npx cap init "<App Name>" <reverse.domain.appid> --web-dir <output dir>`. Don't run `cap add android`; the builder does that on its side.
+  4. If the site calls a dev-only backend (`localhost` APIs, a dev proxy), point those calls at a URL the phone can reach and say so in your reply.
+  Projects that are already Expo, React Native, Flutter or native Android need no conversion. Reply with what you did and ask them to tap 📱 again.
+- `"kind": "build-failed"`: read `logPath` (the end of it usually has the error), fix the project, and reply asking them to tap 📱 → Retry. Build output lives in the builder's own copy of the project, so fix the source here, never the copy.
 
 ## 4. Reply on the page
 

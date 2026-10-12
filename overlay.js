@@ -2,10 +2,13 @@
 //   `        circle something, type what you mean, Enter
 //   Shift+`  freeze the page first (keeps open menus and hover states), then circle on the frozen copy
 //   \        compare: the page as it was when you sent your last note on this page, against the live page
+//   📱       (only with --builder) build this project as an Android app and show the install QR
 (() => {
   if (window.__circleback) return;
   window.__circleback = true;
   const TRACE = document.currentScript?.dataset.trace === '1'; // proxy started with --trace: offer ratings
+  const BUILDER = document.currentScript?.dataset.builder === '1'; // proxy started with --builder: offer 📱 builds
+  const BUILD = 'circleback-build';
   const BASE = '/__circleback';
   const PENDING = 'circleback-pending';
   const HISTORY = 'circleback-history';
@@ -34,7 +37,7 @@
     .row{display:flex;justify-content:space-between;align-items:center;margin-top:6px;color:#aaa;font-size:12px}
     .link{background:none;border:0;color:#aaa;cursor:pointer;text-decoration:underline;font-size:12px;padding:0}
     .tools{position:fixed;left:16px;bottom:72px;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:auto}
-    .pen,.cmp{position:relative;width:40px;height:40px;border-radius:50%;border:0;color:#fff;font-size:18px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.3)}
+    .pen,.cmp,.app{position:relative;width:40px;height:40px;border-radius:50%;border:0;color:#fff;font-size:18px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.3)}
     .pen{background:#ff3b6b}
     .cmp{background:#111;font-size:16px}
     .pen i{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#111;color:#fff;font:600 11px/18px system-ui;font-style:normal}
@@ -45,6 +48,14 @@
     .divider{position:fixed;top:0;bottom:0;width:0;pointer-events:none}
     .divider::before{content:'';position:absolute;top:0;bottom:0;left:-1px;width:2px;background:#ff3b6b}
     .grip{position:absolute;top:50%;left:-18px;width:36px;height:36px;margin-top:-18px;border-radius:50%;background:#ff3b6b;color:#fff;display:grid;place-items:center;font-size:15px;cursor:ew-resize;pointer-events:auto;box-shadow:0 4px 14px rgba(0,0,0,.35);touch-action:none}
+    .app{background:#111;font-size:17px}
+    .app.busy{background:#d97706}
+    .buildbox{position:fixed;left:68px;bottom:72px;width:260px;max-width:calc(100vw - 84px);padding:12px;border-radius:10px;background:#111;color:#fff;box-shadow:0 12px 40px rgba(0,0,0,.4);pointer-events:auto}
+    .buildbox .top{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:600}
+    .buildbox .sub{color:#aaa;font-size:12px;margin-top:4px;overflow-wrap:anywhere}
+    .buildbox img{display:block;width:100%;margin:10px 0 6px;border-radius:6px;background:#fff}
+    .buildbox .acts{margin-top:10px;justify-content:space-between}
+    .buildbox a.link{color:#93c5fd}
     .tag{position:fixed;top:60px;padding:3px 8px;border-radius:5px;background:rgba(17,17,17,.85);color:#fff;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
   </style><div class="stage"></div><div class="layer"></div><div class="toasts"></div>`;
   const stage = root.querySelector('.stage');
@@ -61,6 +72,7 @@
   const save = (key, value) => { try { sessionStorage.setItem(key, JSON.stringify(value)); } catch {} };
   let pending = load(PENDING, []);
   let history = load(HISTORY, []);
+  let build = load(BUILD, null); // { id?, status, step?, startedAt?, installUrl?, latestUrl?, error? }
 
   const ns = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs = {}, text) => {
@@ -272,6 +284,13 @@
       if (pending.length) pen.append(el('i', {}, String(pending.length)));
       pen.onclick = () => startDraw(false);
       tools.append(pen);
+      if (BUILDER) {
+        const busy = build && (build.status === 'queued' || build.status === 'running');
+        const app = el('button', { class: `app${busy ? ' busy' : ''}`, type: 'button', title: 'Build this as an Android app and get an install QR' }, '📱');
+        app.onclick = () => (build ? closeBuild(busy) : startBuild());
+        tools.append(app);
+        if (build) renderBuild();
+      }
       if (lastForPage() && mode !== 'compare') {
         const cmp = el('button', { class: 'cmp', type: 'button', title: 'Compare with how this looked at your last note (\\)' }, '⇆');
         cmp.onclick = () => openCompare(lastForPage());
@@ -453,6 +472,103 @@
     } catch (e) { toast(`Rating failed (${e.message})`); }
   }
 
+  // ---- Phone builds (proxy started with --builder) ---------------------------------------------------------------
+  // The proxy relays these to the build server, which builds the folder circleback runs in and serves the APK.
+  // State lives in sessionStorage so a hot reload mid-build keeps showing progress.
+  const setBuild = b => { build = b; save(BUILD, b); render(); };
+  const elapsed = t => { const s = Math.max(0, Math.round((Date.now() - new Date(t)) / 1000)); return `${s / 60 | 0}:${String(s % 60).padStart(2, '0')}`; };
+
+  async function startBuild() {
+    setBuild({ status: 'queued', startedAt: new Date().toISOString() });
+    try {
+      const res = await fetch(`${BASE}/build`, { method: 'POST' });
+      const body = await res.json();
+      if (res.status === 404) return setBuild({ status: 'not-app' });
+      if (!res.ok) throw new Error(body.error || res.status);
+      setBuild({ ...body, startedAt: body.startedAt || body.createdAt });
+      pollBuild();
+    } catch (e) { setBuild({ status: 'error', error: e.message }); }
+  }
+
+  async function pollBuild() {
+    if (!build?.id || !['queued', 'running'].includes(build.status)) return;
+    try {
+      const res = await fetch(`${BASE}/build/${build.id}`);
+      if (res.ok) {
+        const b = await res.json();
+        if (build?.id === b.id) setBuild({ ...b, startedAt: b.startedAt || b.createdAt });
+      }
+    } catch {}
+    if (['queued', 'running'].includes(build?.status)) setTimeout(pollBuild, 2500);
+  }
+
+  // One ticker keeps the elapsed time moving while a build runs.
+  setInterval(() => { if (BUILDER && ['queued', 'running'].includes(build?.status) && (mode === 'off' || mode === 'compare')) render(); }, 1000);
+
+  function closeBuild(running) {
+    if (running && build.id) fetch(`${BASE}/build/${build.id}/cancel`, { method: 'POST' }).catch(() => {});
+    setBuild(null);
+  }
+
+  // Hand a request to the agent as an ordinary note, so its reply shows up like any other.
+  async function noteToAgent(text, extra) {
+    try {
+      const res = await fetch(`${BASE}/note`, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ note: text, url: location.pathname + location.search + location.hash, title: document.title, ...extra }) });
+      if (!res.ok) throw new Error(String(res.status));
+      const { id } = await res.json();
+      pending.push(id); save(PENDING, pending);
+      setBuild(null);
+      toast('Sent to your agent');
+    } catch (e) { toast(`Send failed (${e.message})`); }
+  }
+
+  function renderBuild() {
+    const box = el('div', { class: 'buildbox' });
+    const top = el('div', { class: 'top' });
+    const x = el('button', { class: 'link', type: 'button', title: 'Close' }, '✕');
+    const running = ['queued', 'running'].includes(build.status);
+    x.onclick = () => closeBuild(false);
+    const sub = text => el('div', { class: 'sub' }, text);
+    const link = (href, text) => { const a = el('a', { class: 'link', href, target: '_blank', rel: 'noopener' }, text); return a; };
+    const acts = el('div', { class: 'acts' });
+    if (running) {
+      top.append(el('span', {}, `Building ${build.projectName || 'app'}… ${elapsed(build.startedAt)}`), x);
+      box.append(top, sub(build.step || (build.status === 'queued' ? 'Waiting in queue' : 'Starting')));
+      const stop = el('button', { class: 'link', type: 'button' }, 'Cancel build');
+      stop.onclick = () => closeBuild(true);
+      acts.append(stop);
+      if (build.dashboardUrl) acts.append(link(build.dashboardUrl, 'Full log'));
+    } else if (build.status === 'success') {
+      top.append(el('span', {}, `${build.projectName} ${build.versionName || ''} is ready`), x);
+      // The latest-build link never goes stale, so the same QR works after every rebuild.
+      const target = build.latestUrl || build.installUrl;
+      box.append(top, el('img', { src: `${BASE}/build/qr.svg?u=${encodeURIComponent(target)}`, alt: 'Install QR code' }), sub('Scan with your phone to install'));
+      const again = el('button', { class: 'send', type: 'button' }, 'Rebuild');
+      again.onclick = startBuild;
+      acts.append(link(build.installUrl, 'Install page'), again);
+    } else if (build.status === 'not-app') {
+      top.append(el('span', {}, 'Not an app yet'), x);
+      box.append(top, sub('This project has no Android app to build. Your agent can wrap it as one (Capacitor), then tap 📱 again.'));
+      const ask = el('button', { class: 'send', type: 'button' }, 'Make it an app');
+      ask.onclick = () => noteToAgent('Make this project installable as an Android app so the 📱 button can build it (see "make-app" in the circleback skill).', { kind: 'make-app' });
+      acts.append(el('span'), ask);
+    } else {
+      top.append(el('span', {}, build.status === 'cancelled' ? 'Build cancelled' : 'Build failed'), x);
+      box.append(top, sub(build.error || (build.step ? `Stopped at: ${build.step}` : '')));
+      const again = el('button', { class: 'link', type: 'button' }, 'Retry');
+      again.onclick = startBuild;
+      acts.append(again);
+      if (build.status === 'failed' && build.logPath) {
+        const fix = el('button', { class: 'send', type: 'button' }, 'Ask agent to fix');
+        fix.onclick = () => noteToAgent(`The Android build failed${build.step ? ` at "${build.step}"` : ''}. Read the log, fix the project, then tell me to tap 📱 again.`, { kind: 'build-failed', buildId: build.id, logPath: build.logPath });
+        acts.append(fix);
+      }
+    }
+    box.append(acts);
+    layer.append(box);
+  }
+
   // ---- Replies ----------------------------------------------------------------------------------------------------
   // Looked up by note id, so a page reload (e.g. after the fix) still shows them.
   async function poll() {
@@ -488,6 +604,6 @@
   function cancelAll() { if (mode === 'compare') closeCompare(); else cancel(); }
   addEventListener('resize', () => { if (compare) render(); });
 
-  const mount = () => { document.documentElement.append(host); render(); poll(); };
+  const mount = () => { document.documentElement.append(host); render(); poll(); if (BUILDER) pollBuild(); };
   if (document.body) mount(); else addEventListener('DOMContentLoaded', mount);
 })();
