@@ -75,15 +75,19 @@ function git(args, env) {
   return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
-// Files to ship to a phone builder: what git would see (tracked + untracked, minus ignored) plus root .env files,
-// which apps often need at build time. Outside git, everything except dependency and build output folders.
+// Files to ship to a phone builder: what git would see (tracked + untracked, minus ignored) plus the root build-time
+// secrets apps usually gitignore: .env files and Firebase configs. Outside git, everything except dependency and
+// build output folders.
 const SKIP_DIRS = new Set(['node_modules', '.git', '.circleback', '.gradle', '.expo', '.next', '.dart_tool', '.turbo', '.cache', 'Pods']);
+const SECRETS = /^(\.env.*|google-services\.json|GoogleService-Info\.plist)$/;
 function sourceFiles(root) {
-  const envs = readdirSync(root).filter(f => /^\.env/.test(f) && statSync(join(root, f)).isFile());
+  const envs = readdirSync(root).filter(f => SECRETS.test(f) && statSync(join(root, f)).isFile());
   try {
-    const listed = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 256 << 20, stdio: ['ignore', 'pipe', 'ignore'] })
+    const ls = args => execFileSync('git', ['ls-files', ...args, '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 256 << 20, stdio: ['ignore', 'pipe', 'ignore'] })
       .split('\0').filter(f => f && existsSync(join(root, f)));
-    return [...new Set([...listed, ...envs])];
+    // Firebase configs are gitignored by convention but needed wherever they sit (e.g. android/app/).
+    const firebase = ls(['-oi', '--exclude-standard', '--', ':(glob)**/google-services.json', ':(glob)**/GoogleService-Info.plist']).filter(f => !f.includes('node_modules/'));
+    return [...new Set([...ls(['-co', '--exclude-standard']), ...envs, ...firebase])];
   } catch {}
   const out = [];
   const walk = rel => {
