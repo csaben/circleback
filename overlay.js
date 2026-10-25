@@ -34,6 +34,10 @@
     form{position:fixed;width:320px;padding:10px;border-radius:9px;background:#111;color:#fff;box-shadow:0 12px 40px rgba(0,0,0,.4);pointer-events:auto}
     textarea{display:block;width:100%;resize:vertical;padding:8px;border-radius:6px;border:1px solid #444;background:#1c1c1c;color:#fff;outline:none}
     textarea:focus{border-color:#ff3b6b}
+    .thumbs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+    .thumb{position:relative;display:block;width:56px;height:56px;border-radius:6px;overflow:hidden;background:#222;border:1px solid #333}
+    .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+    .thumb button{position:absolute;top:2px;right:2px;width:18px;height:18px;padding:0;border:0;border-radius:50%;background:rgba(0,0,0,.75);color:#fff;font-size:10px;line-height:18px;cursor:pointer}
     .row{display:flex;justify-content:space-between;align-items:center;margin-top:6px;color:#aaa;font-size:12px}
     .link{background:none;border:0;color:#aaa;cursor:pointer;text-decoration:underline;font-size:12px;padding:0}
     .tools{position:fixed;left:16px;bottom:72px;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:auto}
@@ -277,7 +281,49 @@
     } else if (!on && frozen) { frozen.remove(); frozen = null; }
   }
 
-  function cancel() { setFrozen(false); mode = 'off'; stroke = []; snap = null; render(); }
+  function cancel() { setFrozen(false); mode = 'off'; stroke = []; snap = null; dropAttachments(); render(); }
+
+  // ---- Attachments: images pasted (Ctrl+V) or dropped in, e.g. a fresh snip to use as a reference or asset ---------
+  // Each uploads as soon as it arrives, like the snapshot, so sending stays instant.
+  let attachments = []; // { url (object URL for the thumbnail), name, upload: Promise<id|null> }
+  let thumbs = null; // the thumbnail row in the open note form, updated in place so typed text survives
+  const imagesIn = list => [...(list || [])].map(i => (i.getAsFile ? (i.kind === 'file' ? i.getAsFile() : null) : i)).filter(f => f && /^image\//.test(f.type));
+
+  function attach(files) {
+    for (const f of files) {
+      const upload = fetch(`${BASE}/asset`, { method: 'POST', headers: { 'content-type': f.type }, body: f })
+        .then(r => (r.ok ? r.json() : null)).then(j => j?.id ?? null).catch(() => null);
+      attachments.push({ url: URL.createObjectURL(f), name: f.name, upload });
+    }
+    if (mode === 'draw' && !drawing) render(); else renderThumbs(); // the note form is patched in place to keep its text
+  }
+
+  function dropAttachments() { attachments.forEach(a => URL.revokeObjectURL(a.url)); attachments = []; }
+
+  function renderThumbs() {
+    if (!thumbs) return;
+    thumbs.replaceChildren(...attachments.map((a, i) => {
+      const t = el('span', { class: 'thumb' });
+      const img = el('img', { src: a.url, alt: a.name || 'Pasted image' });
+      const x = el('button', { type: 'button', title: 'Remove' }, '✕');
+      x.onclick = () => { URL.revokeObjectURL(a.url); attachments.splice(i, 1); renderThumbs(); };
+      t.append(img, x);
+      return t;
+    }));
+    thumbs.style.display = attachments.length ? '' : 'none';
+  }
+
+  addEventListener('paste', e => {
+    const files = imagesIn(e.clipboardData?.items);
+    if (!files.length) return;
+    if (mode === 'draw' || mode === 'note') { e.preventDefault(); attach(files); return; }
+    // Pasting an image onto the page (not into one of its own fields) starts a note with it: circle where it goes.
+    const t = e.composedPath()[0];
+    if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    e.preventDefault();
+    startDraw(false);
+    attach(files);
+  }, true);
 
   function render() {
     layer.replaceChildren();
@@ -325,8 +371,9 @@
     layer.append(svg);
     if (mode === 'draw' && !stroke.length) {
       const hint = el('div', { class: 'hint' });
-      hint.innerHTML = touch ? (frozen ? '<b>Frozen</b> · circle or tap what you mean' : 'Circle or tap what you mean')
-        : frozen ? '<b>Frozen</b> · circle or click what you mean · Esc to cancel' : 'Circle or click what you mean · Shift+` to freeze · Esc to cancel';
+      const what = attachments.length ? `where ${attachments.length > 1 ? 'these go' : 'this goes'}` : 'what you mean';
+      hint.innerHTML = touch ? (frozen ? `<b>Frozen</b> · circle or tap ${what}` : `Circle or tap ${what}`)
+        : frozen ? `<b>Frozen</b> · circle or click ${what} · Esc to cancel` : `Circle or click ${what} · Shift+\` to freeze · Esc to cancel`;
       const x = el('button', { class: 'link', type: 'button' }, 'Cancel'); x.onclick = cancelAll; hint.append(x);
       layer.append(hint);
     }
@@ -335,8 +382,13 @@
       const form = el('form');
       form.style.left = `${Math.max(8, Math.min(box.left, innerWidth - 328))}px`;
       form.style.maxWidth = 'calc(100vw - 16px)';
-      form.style.top = `${box.top + box.height + 10 > innerHeight - 140 ? Math.max(8, box.top - 130) : box.top + box.height + 10}px`;
-      const ta = el('textarea', { rows: 3, placeholder: 'What should change?' });
+      const tall = attachments.length ? 200 : 140;
+      form.style.top = `${box.top + box.height + 10 > innerHeight - tall ? Math.max(8, box.top - tall + 10) : box.top + box.height + 10}px`;
+      const ta = el('textarea', { rows: 3, placeholder: touch ? 'What should change?' : 'What should change? Ctrl+V adds an image' });
+      thumbs = el('div', { class: 'thumbs' });
+      renderThumbs();
+      form.addEventListener('dragover', e => { if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault(); });
+      form.addEventListener('drop', e => { const files = imagesIn(e.dataTransfer?.files); if (files.length) { e.preventDefault(); attach(files); } });
       const row = el('div', { class: 'row' });
       const redraw = el('button', { class: 'link', type: 'button' }, 'Redraw');
       redraw.onclick = () => { stroke = []; mode = 'draw'; render(); };
@@ -346,7 +398,7 @@
       const acts = el('span', { class: 'acts' });
       row.append(el('span', {}, touch ? '' : 'Enter sends'), acts);
       acts.append(close, redraw, go);
-      form.append(ta, row);
+      form.append(thumbs, ta, row);
       ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(ta.value); } e.stopPropagation(); });
       form.onsubmit = e => { e.preventDefault(); send(ta.value); };
       layer.append(form);
@@ -355,7 +407,7 @@
   }
 
   async function send(text) {
-    if (!text.trim() || !stroke.length) return;
+    if ((!text.trim() && !attachments.length) || !stroke.length) return;
     const box = boxOf(stroke);
     const tiny = box.width < 8 && box.height < 8;
     // Read elements from the frozen copy when frozen; it sits at the same coordinates as the page.
@@ -368,6 +420,8 @@
     host.style.display = '';
     const round = b => ({ left: Math.round(b.left), top: Math.round(b.top), width: Math.round(b.width), height: Math.round(b.height) });
     const shot = snap;
+    const attached = attachments;
+    attachments = []; thumbs = null;
     const note = {
       note: text.trim(),
       url: location.pathname + location.search + location.hash,
@@ -385,6 +439,12 @@
     mode = 'off'; stroke = []; snap = null; render();
     try {
       note.snapshot = shot ? await shot.upload : null;
+      if (attached.length) {
+        const ids = await Promise.all(attached.map(a => a.upload));
+        attached.forEach(a => URL.revokeObjectURL(a.url));
+        if (ids.includes(null)) toast(`${ids.filter(i => !i).length} image(s) didn't upload`);
+        note.attachments = ids.filter(Boolean);
+      }
       const res = await fetch(`${BASE}/note`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(note) });
       if (!res.ok) throw new Error(String(res.status));
       const { id } = await res.json();

@@ -35,6 +35,8 @@ const inbox = join(dir, 'inbox.jsonl');
 const repliesFile = join(dir, 'replies.jsonl');
 const snapshotDir = join(dir, 'snapshots');
 const traceFile = join(dir, 'trace.jsonl');
+const assetDir = join(dir, 'assets');
+const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif', 'image/svg+xml': 'svg' };
 const SNAPSHOT_ID = /^[a-z0-9]{6,16}$/;
 
 function ensureDir() {
@@ -338,6 +340,10 @@ function serve() {
         // Point the agent at the frozen copy of the page this note was drawn on.
         if (typeof note.snapshot === 'string' && SNAPSHOT_ID.test(note.snapshot)) entry.snapshotFile = join(snapshotDir, `${note.snapshot}.html`);
         else delete entry.snapshot;
+        // Pasted or dropped images, as file paths the agent can open.
+        const files = (Array.isArray(note.attachments) ? note.attachments : []).filter(a => typeof a === 'string' && SNAPSHOT_ID.test(a))
+          .map(a => existsSync(assetDir) && readdirSync(assetDir).find(f => f.startsWith(`${a}.`))).filter(Boolean).map(f => join(assetDir, f));
+        if (files.length) entry.attachments = files; else delete entry.attachments;
         ensureDir();
         // Record the code as it is before the agent sees the note.
         if (trace) appendFileSync(traceFile, JSON.stringify({ type: 'note', id, at: entry.at, tree: worktree() }) + '\n');
@@ -361,6 +367,21 @@ function serve() {
         appendFileSync(traceFile, JSON.stringify(entry) + '\n');
         console.log(`rated ${r.id}: ${r.verdict}`);
         res.writeHead(204); res.end();
+      });
+      return;
+    }
+    if (url.pathname === '/__circleback/asset' && req.method === 'POST') {
+      const ext = IMAGE_TYPES[String(req.headers['content-type']).split(';')[0].trim()];
+      if (!ext) { res.writeHead(415); return res.end('images only'); }
+      const chunks = [];
+      let size = 0;
+      req.on('data', c => { size += c.length; if (size > 25_000_000) req.destroy(); else chunks.push(c); });
+      req.on('end', () => {
+        const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        mkdirSync(assetDir, { recursive: true });
+        writeFileSync(join(assetDir, `${id}.${ext}`), Buffer.concat(chunks));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ id }));
       });
       return;
     }

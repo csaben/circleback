@@ -117,6 +117,7 @@ Everything stays in `.circleback/`. Snapshots are full copies of your page, so c
 | <kbd>`</kbd> | Circle something and leave a note |
 | <kbd>Shift</kbd>+<kbd>`</kbd> | Freeze the page first, then circle on the frozen copy. Open menus and hover states stay put. |
 | <kbd>\</kbd> | Compare: the page before your last note on this page against the live page. Split with a draggable divider, or Before / Now. Scrolling stays in sync. |
+| <kbd>Ctrl</kbd>+<kbd>V</kbd> | Paste an image (a fresh snip, a mockup, an asset). On the page it starts a note: circle where it goes. In the note box it adds another. Images can also be dropped onto the note. |
 | <kbd>Esc</kbd> | Cancel or close |
 
 Agent replies also show a **Compare** button.
